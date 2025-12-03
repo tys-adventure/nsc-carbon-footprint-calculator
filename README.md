@@ -1,0 +1,1 @@
+# nsc-carbon-footprint-calculator
