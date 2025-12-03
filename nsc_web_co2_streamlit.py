@@ -441,7 +441,6 @@ if run_button:
 
         st.info(
             "These grades are based on per-page-view CO₂ in grams using a simple, opinionated scale. "
-            "You can tweak the thresholds in the code to match your own standards."
         )
 
         st.divider()
