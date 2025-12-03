@@ -1,12 +1,3 @@
-Here you go, Peak — a full-blown README you can drop straight into your repo as README.md. I’ll assume:
-	•	Repo name: nsc-carbon-footprint-calculator
-	•	App file: nsc_web_co2_streamlit.py
-
-You can tweak naming if needed.
-
-⸻
-
-
 # 🌱 Nani Summit Creative – Website CO₂ Estimator
 
 A lightweight web tool for estimating the **per-page-view CO₂ emissions** of a website, comparing:
