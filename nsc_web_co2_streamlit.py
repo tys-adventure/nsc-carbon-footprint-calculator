@@ -53,16 +53,20 @@ def co2_for_bytes(num_bytes: int, kwh_per_gb: float = KWH_PER_GB,
 
 def grade_from_co2(co2_g: float) -> str:
     """
-    Return a letter grade (A–F) based on CO₂ per page view in grams.
-    You can tweak these thresholds to match your philosophy.
+    Strict grading scale (rounded CO₂ in grams per page view):
+    A: <= 0.20 g
+    B: 0.20–0.70 g
+    C: 0.70–1.10 g
+    D: 1.10–1.60 g
+    F: > 1.60 g
     """
-    if co2_g <= 0.5:
+    if co2_g <= 0.20:
         return "A"
-    elif co2_g <= 1.0:
+    elif co2_g <= 0.70:
         return "B"
-    elif co2_g <= 1.5:
+    elif co2_g <= 1.10:
         return "C"
-    elif co2_g <= 2.0:
+    elif co2_g <= 1.60:
         return "D"
     else:
         return "F"
@@ -403,7 +407,7 @@ st.set_page_config(
 )
 
 st.title("🌱 Nani Summit Creative Website CO₂ Estimator")
-st.caption("Compare first-visit vs. return-visit data transfer, CO₂, and a simple letter grade.")
+st.caption("Compare first-visit vs. return-visit data transfer, CO₂, and a strict letter grade.")
 
 default_url = "https://example.com"
 url = st.text_input("Page URL to measure", value=default_url, placeholder="https://your-site.com")
@@ -433,15 +437,22 @@ if run_button:
         rv = results["return_visit"]
         mode = results["model"].get("mode", "playwright")
 
+        # Exact CO₂ values
+        fv_co2_exact = fv["co2_g"]
+        rv_co2_exact = rv["co2_g"]
+
+        # Round to 2 decimal places for both display and grading
+        fv_co2_rounded = round(fv_co2_exact, 2)
+        rv_co2_rounded = round(rv_co2_exact, 2)
+
         # Formatting helpers
         def fmt_mb(x): return f"{x:.2f}"
         def fmt_gb(x): return f"{x:.4f}"
         def fmt_kwh(x): return f"{x:.6f}"
-        def fmt_g(x): return f"{x:.1f}"
 
-        # Letter grades
-        fv_grade = grade_from_co2(fv["co2_g"])
-        rv_grade = grade_from_co2(rv["co2_g"])
+        # Letter grades based on rounded values
+        fv_grade = grade_from_co2(fv_co2_rounded)
+        rv_grade = grade_from_co2(rv_co2_rounded)
 
         if mode == "http-only":
             st.warning(
@@ -458,14 +469,14 @@ if run_button:
             st.metric("Data (MB)", fmt_mb(fv["mb"]))
             st.metric("Data (GB)", fmt_gb(fv["gb"]))
             st.metric("Energy (kWh)", fmt_kwh(fv["energy_kwh"]))
-            st.metric("CO₂ (g)", fmt_g(fv["co2_g"]))
+            st.metric("CO₂ (g)", f"{fv_co2_rounded:.2f}")
         with col2:
             st.markdown("**Return visit (warm cache, approx.)**")
             st.metric("Letter grade", rv_grade)
             st.metric("Data (MB)", fmt_mb(rv["mb"]))
             st.metric("Data (GB)", fmt_gb(rv["gb"]))
             st.metric("Energy (kWh)", fmt_kwh(rv["energy_kwh"]))
-            st.metric("CO₂ (g)", fmt_g(rv["co2_g"]))
+            st.metric("CO₂ (g)", f"{rv_co2_rounded:.2f}")
 
         st.divider()
 
@@ -477,7 +488,7 @@ if run_button:
         )
 
         st.info(
-            "These grades are based on per-page-view CO₂ in grams using a simple, opinionated scale. "
+            "These grades are based on per-page-view CO₂ in grams using a stricter scale. "
             "You can tweak the thresholds in the code to match your own standards."
         )
 
@@ -495,7 +506,7 @@ if run_button:
                 "MB": float(fmt_mb(fv["mb"])),
                 "GB": float(fmt_gb(fv["gb"])),
                 "Energy (kWh)": float(fmt_kwh(fv["energy_kwh"])),
-                "CO₂ (g)": float(fmt_g(fv["co2_g"])),
+                "CO₂ (g)": float(f"{fv_co2_rounded:.2f}"),
             },
             {
                 "Visit type": "Return visit",
@@ -504,7 +515,7 @@ if run_button:
                 "MB": float(fmt_mb(rv["mb"])),
                 "GB": float(fmt_gb(rv["gb"])),
                 "Energy (kWh)": float(fmt_kwh(rv["energy_kwh"])),
-                "CO₂ (g)": float(fmt_g(rv["co2_g"])),
+                "CO₂ (g)": float(f"{rv_co2_rounded:.2f}"),
             },
         ]
 
@@ -534,6 +545,6 @@ organizations. The goal is simple: faster sites that tread lighter on the planet
 without sacrificing good design or real-world results.
 
 If you’re curious how your site stacks up — or want to make your next build a little
-greener — this tool is one of the nerdy ways we like to start that conversation. Learn more at: https:nanisummitcreative.com.
+greener — this tool is one of the nerdy ways we like to start that conversation. Learn more at: <a href "https:nanisummitcreative.com"> Nani Summit Creative</a>.
 """
 )
