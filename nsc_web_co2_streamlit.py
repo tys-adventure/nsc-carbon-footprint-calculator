@@ -3,6 +3,29 @@
 import streamlit as st
 from contextlib import contextmanager
 from playwright.sync_api import sync_playwright
+import subprocess  # NEW: for running `playwright install`
+
+# --- Ensure Playwright browsers are available (for Streamlit Cloud, etc.) ---
+
+@st.cache_resource
+def ensure_playwright_browsers_installed():
+    """
+    Install the Chromium browser for Playwright if it isn't already present.
+    Cached so it only runs once per container.
+    """
+    try:
+        subprocess.run(
+            ["playwright", "install", "chromium"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        # If this fails, we'll see the error when trying to launch the browser anyway
+        pass
+
+    return True
+
 
 # --- Constants (Sustainable Web Design-ish model) ---
 KWH_PER_GB = 0.81          # kWh of energy per GB of data transferred
@@ -188,6 +211,9 @@ if run_button:
     if not url.strip():
         st.error("Please enter a URL first.")
     else:
+        # Make sure Chromium is installed for Playwright (important on Streamlit Cloud)
+        ensure_playwright_browsers_installed()
+
         with st.spinner("Launching headless browser and measuring requests… this may take a bit."):
             try:
                 results = run_measurements(url, headless=headless)
