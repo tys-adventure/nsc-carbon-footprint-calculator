@@ -545,6 +545,6 @@ organizations. The goal is simple: faster sites that tread lighter on the planet
 without sacrificing good design or real-world results.
 
 If you’re curious how your site stacks up — or want to make your next build a little
-greener — this tool is one of the nerdy ways we like to start that conversation. Learn more at: <a href "https:nanisummitcreative.com"> Nani Summit Creative</a>.
+greener — this tool is one of the nerdy ways we like to start that conversation. Learn more at: [Nani Summit Creative](https:nanisummitcreative.com).
 """
 )
