@@ -3,9 +3,12 @@
 import streamlit as st
 from contextlib import contextmanager
 from playwright.sync_api import sync_playwright
-import subprocess  # NEW: for running `playwright install`
+import subprocess
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
-# --- Ensure Playwright browsers are available (for Streamlit Cloud, etc.) ---
+# --- Ensure Playwright browsers are available (for environments that support it) ---
 
 @st.cache_resource
 def ensure_playwright_browsers_installed():
@@ -76,6 +79,8 @@ def grade_description(letter: str) -> str:
     return descriptions.get(letter, "")
 
 
+# ---------- Playwright-based measurement (best when available) ----------
+
 @contextmanager
 def launch_browser(headless: bool = True):
     with sync_playwright() as p:
@@ -86,7 +91,7 @@ def launch_browser(headless: bool = True):
             browser.close()
 
 
-def measure_visit(context, url: str, wait_until: str = "networkidle", timeout: int = 60000):
+def measure_visit_playwright(context, url: str, wait_until: str = "networkidle", timeout: int = 60000):
     """
     Load `url` inside a given Playwright browser context and sum all
     response sizes for that visit.
@@ -137,19 +142,18 @@ def measure_visit(context, url: str, wait_until: str = "networkidle", timeout: i
     return total_bytes
 
 
-def run_measurements(url: str, headless: bool = True):
+def run_measurements_playwright(url: str, headless: bool = True):
     """
-    Run two visits to `url` in the same browser context:
-    - First visit (cold cache)
-    - Second visit (warm cache)
+    Full-browser measurement using Playwright.
+    """
+    # Ensure browsers installed (for supported environments)
+    ensure_playwright_browsers_installed()
 
-    Returns a dict with bytes & CO2 estimates for each.
-    """
     with launch_browser(headless=headless) as browser:
         context = browser.new_context()
 
-        first_bytes = measure_visit(context, url)
-        second_bytes = measure_visit(context, url)
+        first_bytes = measure_visit_playwright(context, url)
+        second_bytes = measure_visit_playwright(context, url)
 
         context.close()
 
@@ -161,6 +165,7 @@ def run_measurements(url: str, headless: bool = True):
         "model": {
             "kwh_per_gb": KWH_PER_GB,
             "grid_intensity_g_per_kwh": GRID_INTENSITY,
+            "mode": "playwright",
             "notes": (
                 "Estimates use Sustainable Web Design model constants. "
                 "Data transfer measured via headless Chromium + Playwright."
@@ -183,6 +188,173 @@ def run_measurements(url: str, headless: bool = True):
     }
 
     return results
+
+
+# ---------- HTTP-only fallback measurement (no real browser) ----------
+
+def collect_resource_urls(base_url: str, html: str):
+    """
+    Very simple static asset discovery: HTML + common assets.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    urls = set()
+
+    # Always include the main document itself
+    urls.add(base_url)
+
+    tag_attr_pairs = [
+        ("img", "src"),
+        ("script", "src"),
+        ("link", "href"),
+        ("video", "src"),
+        ("source", "src"),
+    ]
+
+    for tag, attr in tag_attr_pairs:
+        for el in soup.find_all(tag):
+            src = el.get(attr)
+            if not src:
+                continue
+            full = urljoin(base_url, src)
+            urls.add(full)
+
+    return urls
+
+
+def fetch_resource_metadata(url: str, timeout: int = 20):
+    """
+    Best-effort fetch of a resource's size and caching headers.
+    Returns (bytes, headers_dict).
+    """
+    headers = {}
+    length = 0
+
+    try:
+        # Try HEAD first
+        head_resp = requests.head(url, timeout=timeout, allow_redirects=True)
+        headers = {k.lower(): v for k, v in head_resp.headers.items()}
+        cl = headers.get("content-length")
+        if cl:
+            try:
+                length = int(cl)
+            except ValueError:
+                length = 0
+
+        # If no length, fall back to GET
+        if length == 0:
+            get_resp = requests.get(url, timeout=timeout, stream=True)
+            headers = {k.lower(): v for k, v in get_resp.headers.items()}
+            cl = headers.get("content-length")
+            if cl:
+                try:
+                    length = int(cl)
+                except ValueError:
+                    length = 0
+            else:
+                # As a last resort, read content to determine length
+                content = get_resp.content
+                length = len(content)
+
+    except Exception:
+        # On error, just treat as zero-length resource
+        length = 0
+
+    return length, headers
+
+
+def should_refetch_on_return(headers: dict) -> bool:
+    """
+    Heuristic: decide if a resource is likely to be refetched on a return visit.
+    This is rough and conservative, not browser-accurate.
+    """
+    cc = headers.get("cache-control", "").lower()
+    pragma = headers.get("pragma", "").lower()
+
+    if any(token in cc for token in ["no-cache", "no-store", "must-revalidate"]) or "max-age=0" in cc:
+        return True
+    if "no-cache" in pragma:
+        return True
+
+    # Default: assume it's cacheable enough to not be refetched.
+    return False
+
+
+def run_measurements_http(url: str):
+    """
+    Fallback measurement using plain HTTP requests only.
+    No JavaScript execution, approximate caching behavior.
+    """
+    try:
+        resp = requests.get(url, timeout=20)
+    except Exception:
+        # If we can't even fetch the main HTML, bail similarly to Playwright.
+        raise
+
+    html = resp.text
+    resource_urls = collect_resource_urls(url, html)
+
+    resources = []
+    for res_url in resource_urls:
+        length, headers = fetch_resource_metadata(res_url)
+        resources.append(
+            {
+                "url": res_url,
+                "bytes": length,
+                "headers": headers,
+            }
+        )
+
+    first_bytes = sum(r["bytes"] for r in resources)
+    # Approximate "return visit" by summing only resources that are likely to be re-fetched
+    second_bytes = sum(
+        r["bytes"] for r in resources if should_refetch_on_return(r["headers"])
+    )
+
+    first_energy_kwh, first_co2_g = co2_for_bytes(first_bytes)
+    second_energy_kwh, second_co2_g = co2_for_bytes(second_bytes)
+
+    results = {
+        "url": url,
+        "model": {
+            "kwh_per_gb": KWH_PER_GB,
+            "grid_intensity_g_per_kwh": GRID_INTENSITY,
+            "mode": "http-only",
+            "notes": (
+                "Estimates use Sustainable Web Design model constants. "
+                "Data transfer approximated via HTTP requests only (no JS execution)."
+            ),
+        },
+        "first_visit": {
+            "bytes": first_bytes,
+            "mb": bytes_to_mb_gb(first_bytes)[0],
+            "gb": bytes_to_mb_gb(first_bytes)[1],
+            "energy_kwh": first_energy_kwh,
+            "co2_g": first_co2_g,
+        },
+        "return_visit": {
+            "bytes": second_bytes,
+            "mb": bytes_to_mb_gb(second_bytes)[0],
+            "gb": bytes_to_mb_gb(second_bytes)[1],
+            "energy_kwh": second_energy_kwh,
+            "co2_g": second_co2_g,
+        },
+    }
+
+    return results
+
+
+# ---------- Wrapper: try Playwright, fall back to HTTP-only ----------
+
+def run_measurements(url: str, headless: bool = True):
+    """
+    Try full Playwright measurement first. If the environment doesn't support
+    running browsers (like some managed hosts), fall back to HTTP-only mode.
+    """
+    try:
+        return run_measurements_playwright(url, headless=headless)
+    except Exception:
+        # Fallback: HTTP-only approximation
+        return run_measurements_http(url)
 
 
 # ---------- Streamlit UI ----------
@@ -211,10 +383,7 @@ if run_button:
     if not url.strip():
         st.error("Please enter a URL first.")
     else:
-        # Make sure Chromium is installed for Playwright (important on Streamlit Cloud)
-        ensure_playwright_browsers_installed()
-
-        with st.spinner("Launching headless browser and measuring requests… this may take a bit."):
+        with st.spinner("Measuring requests and estimating CO₂… this may take a bit."):
             try:
                 results = run_measurements(url, headless=headless)
             except Exception as e:
@@ -225,6 +394,7 @@ if run_button:
 
         fv = results["first_visit"]
         rv = results["return_visit"]
+        mode = results["model"].get("mode", "playwright")
 
         # Formatting helpers
         def fmt_mb(x): return f"{x:.2f}"
@@ -235,6 +405,12 @@ if run_button:
         # Letter grades
         fv_grade = grade_from_co2(fv["co2_g"])
         rv_grade = grade_from_co2(rv["co2_g"])
+
+        if mode == "http-only":
+            st.warning(
+                "Running in HTTP-only mode (no full browser available on this host). "
+                "JavaScript-heavy pages and caching behavior are approximated."
+            )
 
         st.subheader("Overview")
 
@@ -247,7 +423,7 @@ if run_button:
             st.metric("Energy (kWh)", fmt_kwh(fv["energy_kwh"]))
             st.metric("CO₂ (g)", fmt_g(fv["co2_g"]))
         with col2:
-            st.markdown("**Return visit (warm cache)**")
+            st.markdown("**Return visit (warm cache, approx.)**")
             st.metric("Letter grade", rv_grade)
             st.metric("Data (MB)", fmt_mb(rv["mb"]))
             st.metric("Data (GB)", fmt_gb(rv["gb"]))
@@ -302,7 +478,8 @@ if run_button:
         st.json(results)
 
         st.caption(
-            "Note: Return-visit bytes should usually be lower if browser caching and/or service workers are working well."
+            "Note: Return-visit bytes should usually be lower if browser caching and/or service workers are working well. "
+            "In HTTP-only mode, this is approximated from cache headers."
         )
 else:
     st.info("Enter a URL and click **Run measurement** to get started.")
@@ -320,6 +497,6 @@ organizations. The goal is simple: faster sites that tread lighter on the planet
 without sacrificing good design or real-world results.
 
 If you’re curious how your site stacks up — or want to make your next build a little
-greener — this tool is one of the nerdy ways we like to start that conversation. Learn more at https://nanisummitcreative.com.
+greener — this tool is one of the nerdy ways we like to start that conversation. Learn more at: https:nanisummitcreative.com.
 """
 )
