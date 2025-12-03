@@ -262,21 +262,54 @@ def fetch_resource_metadata(url: str, timeout: int = 20):
     return length, headers
 
 
+def _parse_max_age(cache_control: str):
+    """
+    Extract max-age seconds from a Cache-Control header, or None if missing/unparseable.
+    """
+    for part in cache_control.split(","):
+        part = part.strip()
+        if part.startswith("max-age"):
+            pieces = part.split("=", 1)
+            if len(pieces) == 2:
+                try:
+                    return int(pieces[1])
+                except ValueError:
+                    return None
+    return None
+
+
 def should_refetch_on_return(headers: dict) -> bool:
     """
     Heuristic: decide if a resource is likely to be refetched on a return visit.
-    This is rough and conservative, not browser-accurate.
+
+    We are intentionally conservative:
+    - If we DON'T see a strong, long-lived cache (max-age >= 1 day), we assume
+      the resource WILL be refetched.
+    - Only assets with clear, long max-age are treated as cached.
     """
     cc = headers.get("cache-control", "").lower()
     pragma = headers.get("pragma", "").lower()
 
+    # Explicit "don't cache" directives → refetch
     if any(token in cc for token in ["no-cache", "no-store", "must-revalidate"]) or "max-age=0" in cc:
         return True
     if "no-cache" in pragma:
         return True
 
-    # Default: assume it's cacheable enough to not be refetched.
-    return False
+    # If Cache-Control exists, check max-age
+    if cc:
+        max_age = _parse_max_age(cc)
+        if max_age is not None:
+            # Treat as cached only if max-age is at least 1 day
+            if max_age >= 86400:
+                return False
+            else:
+                return True
+        # Cache-Control present but no usable max-age → assume refetch
+        return True
+
+    # No Cache-Control header at all → assume refetch
+    return True
 
 
 def run_measurements_http(url: str):
@@ -309,6 +342,10 @@ def run_measurements_http(url: str):
     second_bytes = sum(
         r["bytes"] for r in resources if should_refetch_on_return(r["headers"])
     )
+
+    # Safety floor so we don't return unrealistically tiny second visits
+    if first_bytes > 0 and second_bytes < first_bytes * 0.1:
+        second_bytes = int(first_bytes * 0.1)
 
     first_energy_kwh, first_co2_g = co2_for_bytes(first_bytes)
     second_energy_kwh, second_co2_g = co2_for_bytes(second_bytes)
@@ -373,7 +410,7 @@ url = st.text_input("Page URL to measure", value=default_url, placeholder="https
 
 col_left, col_right = st.columns([1, 1])
 with col_left:
-    headless = st.checkbox("Run browser headless (recommended)", value=True)
+    headless = st.checkbox("Run browser headless (recommended when supported)", value=True)
 with col_right:
     st.write("")  # spacing
 
@@ -409,7 +446,7 @@ if run_button:
         if mode == "http-only":
             st.warning(
                 "Running in HTTP-only mode (no full browser available on this host). "
-                "JavaScript-heavy pages and caching behavior are approximated."
+                "JavaScript-heavy pages and caching behavior are approximated from headers."
             )
 
         st.subheader("Overview")
@@ -441,6 +478,7 @@ if run_button:
 
         st.info(
             "These grades are based on per-page-view CO₂ in grams using a simple, opinionated scale. "
+            "You can tweak the thresholds in the code to match your own standards."
         )
 
         st.divider()
